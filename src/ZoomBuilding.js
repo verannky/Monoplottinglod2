@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { FaEye } from "react-icons/fa";
+import './Imageannotator.css';
 import Cesium, {
   Ion,
   IonResource,
@@ -32,12 +33,14 @@ import ShowAnnotation from './ShowAnnotation';
 import { handlePlace } from "./handlePlace";
 import { FaTrash } from "react-icons/fa";
 import { FaSyncAlt } from "react-icons/fa";
+import { FaInfoCircle } from "react-icons/fa";
+import exifr from "exifr";
+import useImage from "use-image";
 
 const ZoomBuilding = () => {
   const viewerRef = useRef(null);
   const { uid } = useParams();
   const navigate = useNavigate();
-
   const [files, setFiles] = useState([]);
   const [images, setImages] = useState([]);
   const [selectedImage, setSelectedImage] = useState(null);
@@ -46,6 +49,7 @@ const ZoomBuilding = () => {
   const [showingAnnotation, setShowingAnnotation] = useState(null);
   const [placedWindows, setPlacedWindows] = useState([]);
   const viewerInstanceRef = useRef(null); 
+  const [windowTypes, setWindowTypes] = useState({});
 
   useEffect(() => {
     Ion.defaultAccessToken =
@@ -313,6 +317,110 @@ const ZoomBuilding = () => {
     });
   }, [annotations, uid]);
 
+  const InfoTooltip = ({ imageName, metadata }) => {
+    const [info, setInfo] = useState(null);
+    const [visible, setVisible] = useState(false);
+
+    // Extract base filename, e.g. IMG_1959.jpg
+    const baseName = imageName.includes("_")
+      ? imageName.split("_").slice(-2).join("_")
+      : imageName;
+
+    useEffect(() => {
+      if (visible && !info) {
+        fetch("/reference_lab.txt")
+          .then((res) => res.text())
+          .then((text) => {
+            const lines = text.split("\n");
+            const line = lines.find((l) => l.trim().startsWith(baseName));
+            if (!line) {
+              console.warn("No reference data found for", baseName);
+              return;
+            }
+
+            const parts = line.split(",");
+            setInfo({
+              omega: parts[12],
+              phi: parts[13],
+              kappa: parts[14],
+            });
+          })
+          .catch((err) => console.error("❌ Failed to load reference:", err));
+      }
+    }, [visible, info, baseName]);
+
+    const tooltipContent = info
+      ? 
+        `Omega: ${info.omega ?? "-"}\n` +
+        `Phi: ${info.phi ?? "-"}\n` +
+        `Kappa: ${info.kappa ?? "-"}`
+      : "Loading...";
+
+    return (
+      <div
+        className={`tooltip-container ${visible ? "show" : ""}`}
+        onMouseEnter={() => setVisible(true)}
+        onMouseLeave={() => setVisible(false)}
+        style={{ cursor: "pointer", marginRight: 8, position: "relative", display: "inline-block" }}
+      >
+        <FaInfoCircle color="blue" size={20} />
+        {visible && (
+          <div
+            style={{
+              visibility: "visible",
+              width: "max-content",
+              maxWidth: "300px",
+              backgroundColor: "#333",
+              color: "#fff",
+              textAlign: "left",
+              borderRadius: "6px",
+              padding: "8px",
+              position: "absolute",
+              zIndex: 100,
+              top: "120%",
+              left: 0,
+              opacity: 1,
+              transition: "opacity 0.3s",
+              fontSize: "0.85rem",
+              whiteSpace: "pre-line",
+            }}
+          >
+            {tooltipContent}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  useEffect(() => {
+    async function loadJenisJendelaForAll() {
+      const types = {};
+
+      for (const filename of placedWindows) {
+        const imageBaseName = filename.replace(".geojson", "");
+        const encoded = encodeURIComponent(`${imageBaseName}.geojson`);
+        const url = `http://localhost:5000/api/placed_windows/${uid}/${encoded}`;
+
+        try {
+          const res = await fetch(url);
+          if (!res.ok) continue;
+
+          const geojson = await res.json();
+          const firstFeature = geojson.features?.[0];
+          const jenis = firstFeature?.properties?.jenisJendela || "";
+          types[filename] = jenis;
+        } catch (err) {
+          console.error(`❌ Failed to load jenisJendela for ${filename}:`, err);
+        }
+      }
+
+      setWindowTypes(types);
+    }
+
+    if (placedWindows.length > 0) {
+      loadJenisJendelaForAll();
+    }
+  }, [placedWindows, uid]);
 
   // Move function outside useEffect
   const loadPlacedWindows = async () => {
@@ -324,6 +432,33 @@ const ZoomBuilding = () => {
       setPlacedWindows(data);
     } catch (err) {
       console.error("Error loading placed windows:", err);
+    }
+  };
+
+  const showImageInfo = async (imageName, cleanMetadata) => {
+    try {
+      const res = await fetch("/reference_lab.txt"); // must be in /public/
+      const text = await res.text();
+      const lines = text.split("\n");
+      const line = lines.find((l) => l.startsWith(imageName));
+      if (!line) {
+        console.warn("No reference data found for", imageName);
+        return;
+      }
+
+      const parts = line.split(",");
+      const omega = parts[12];
+      const phi = parts[13];
+      const kappa = parts[14];
+
+      console.log("FocalLength:", cleanMetadata.FocalLength);
+      console.log("ImageWidth:", cleanMetadata.ExifImageWidth);
+      console.log("ImageHeight:", cleanMetadata.ExifImageHeight);
+      console.log("Omega:", omega);
+      console.log("Phi:", phi);
+      console.log("Kappa:", kappa);
+    } catch (err) {
+      console.error("❌ Error reading reference_lab.txt", err);
     }
   };
 
@@ -499,6 +634,9 @@ const ZoomBuilding = () => {
                   >
                     <FaEye />
                   </button>
+
+                  <InfoTooltip imageName={img.name} metadata={img.metadata} />
+
 
                   <button
                     onClick={async () => {
@@ -679,66 +817,130 @@ const ZoomBuilding = () => {
           ) : (
             <ul style={{ listStyleType: "none", paddingLeft: 0 }}>
               {placedWindows.map((filename) => (
-                <li
-                  key={filename}
-                  style={{
-                    marginBottom: "10px",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "10px",
-                  }}
-                >
-                  <span style={{ flex: 1 }}>{filename}</span>
+                <React.Fragment key={filename}>
+                  {/* List Item */}
+                  <li
+                    style={{
+                      marginBottom: "10px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                    }}
+                  >
+                    <span style={{ flex: 1 }}>{filename}</span>
+                    <button
+                      onClick={async () => {
+                        const confirmed = window.confirm(`Delete ${filename}?`);
+                        if (!confirmed) return;
 
-                  <button
-                    onClick={async () => {
-                      const confirmed = window.confirm(`Delete ${filename}?`);
-                      if (!confirmed) return;
+                        try {
+                          const res = await fetch(
+                            `http://localhost:5000/api/placed/${uid}/${encodeURIComponent(
+                              filename
+                            )}`,
+                            { method: "DELETE" }
+                          );
 
-                      try {
-                        const res = await fetch(
-                          `http://localhost:5000/api/placed/${uid}/${encodeURIComponent(
-                            filename
-                          )}`,
-                          { method: "DELETE" }
-                        );
+                          if (res.ok) {
+                            if (viewerInstanceRef.current) {
+                              const viewer = viewerInstanceRef.current;
+                              const entitiesToRemove = viewer.entities.values.filter(
+                                (e) => e.name === filename
+                              );
+                              entitiesToRemove.forEach((e) => viewer.entities.remove(e));
+                            }
 
-                        if (res.ok) {
-                          if (viewerInstanceRef.current) {
-                            const viewer = viewerInstanceRef.current;
-                            const entitiesToRemove = viewer.entities.values.filter(
-                              (e) => e.name === filename
-                            );
-                            entitiesToRemove.forEach((e) =>
-                              viewer.entities.remove(e)
-                            );
+                            setPlacedWindows((prev) => prev.filter((f) => f !== filename));
+                          } else {
+                            alert("❌ Failed to delete from server.");
+                          }
+                        } catch (err) {
+                          console.error("❌ Delete error:", err);
+                        }
+                      }}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "red",
+                        cursor: "pointer",
+                        fontSize: "1rem",
+                      }}
+                      title="Delete"
+                    >
+                      <FaTrash />
+                    </button>
+                  </li>
+                  
+                  {/* Input and Save Button - outside the li but associated with it */}
+                  <div style={{ display: "flex", gap: "5px", marginLeft: "10px", marginBottom: "15px" }}>
+                    <input
+                      type="text"
+                      placeholder="Jenis Jendela"
+                      id={`window-type-${filename}`}
+                      defaultValue={windowTypes[filename] || ""}
+                      style={{ flex: 1, padding: "5px" }}
+                    />
+                    <button
+                      onClick={async () => {
+                        const windowType = document.getElementById(`window-type-${filename}`).value;
+                        if (!windowType) {
+                          alert("Please enter jenis jendela");
+                          return;
+                        }
+
+                        try {
+                          const imageBaseName = filename.replace('.geojson', '');
+                          const encodedFilename = encodeURIComponent(`${imageBaseName}.geojson`);
+                          const url = `http://localhost:5000/api/placed_windows/${uid}/${encodedFilename}`; // ✅ FIXED
+
+                          console.log('🔍 Attempting to fetch:', url);
+                          const response = await fetch(url);
+
+                          if (!response.ok) {
+                            console.error('❌ Fetch failed with status:', response.status);
+                            const errorText = await response.text();
+                            console.error('❌ Error response:', errorText);
+                            throw new Error(`HTTP error! status: ${response.status}`);
                           }
 
-                          setPlacedWindows((prev) =>
-                            prev.filter((f) => f !== filename)
-                          );
-                        } else {
-                          alert("❌ Failed to delete from server.");
+                          const geojson = await response.json();
+                          console.log('✅ Existing GeoJSON:', geojson);
+
+                          // Inject jenis jendela into each feature's properties
+                          if (geojson.features && Array.isArray(geojson.features)) {
+                            geojson.features.forEach(feature => {
+                              if (!feature.properties) feature.properties = {};
+                              feature.properties.jenisJendela = windowType;
+                            });
+                          }
+
+                          // PUT updated GeoJSON back to server
+                          const saveUrl = `http://localhost:5000/api/placed_windows/${uid}/${encodedFilename}`; // ✅ FIXED
+                          const putResponse = await fetch(saveUrl, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(geojson, null, 2),
+                          });
+
+                          if (!putResponse.ok) {
+                            throw new Error(`Failed to save updated GeoJSON. Status: ${putResponse.status}`);
+                          }
+
+                          alert("✅ Jenis jendela saved successfully!");
+                        } catch (err) {
+                          console.error("❌ Full error details:", err);
+                          alert(`Error saving jenis jendela: ${err.message}`);
                         }
-                      } catch (err) {
-                        console.error("❌ Delete error:", err);
-                      }
-                    }}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: "red",
-                      cursor: "pointer",
-                      fontSize: "1rem",
-                    }}
-                    title="Delete"
-                  >
-                    <FaTrash />
-                  </button>
-                </li>
+                      }}
+                    >
+                      Save
+                    </button>
+                  </div>
+                </React.Fragment>
               ))}
             </ul>
           )}
+          
         </div>
 
         {showingAnnotation && (

@@ -53,6 +53,45 @@ router.get("/placed_windows/:buildingId", (req, res) => {
   });
 });
 
+// ✅ GET individual GeoJSON file content
+router.get("/placed_windows/:buildingId/:filename", (req, res) => {
+  const { buildingId, filename } = req.params;
+  console.log("🔍 Requested:", buildingId, filename); 
+  const filePath = path.join(__dirname, "..", "placed_windows", buildingId, filename);
+
+  // Check if file exists first
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: "GeoJSON file not found." });
+  }
+
+  // Read and return the file
+  fs.readFile(filePath, 'utf8', (err, data) => {
+    if (err) {
+      console.error("❌ Error reading GeoJSON:", err);
+      return res.status(500).json({ error: "Failed to read GeoJSON file." });
+    }
+    res.send(data); // Returns the raw GeoJSON content
+  });
+});
+
+router.put("/placed_windows/:buildingId/:filename", (req, res) => {
+  const { buildingId, filename } = req.params;
+  const filePath = path.join(__dirname, "..", "placed_windows", buildingId, filename);
+
+  console.log(`📝 PUT Request:`);
+  console.log(`➡️  Building ID: ${buildingId}`);
+  console.log(`➡️  Filename: ${filename}`);
+  console.log(`📄 Full path: ${filePath}`);
+
+  fs.writeFile(filePath, JSON.stringify(req.body, null, 2), (err) => {
+    if (err) {
+      console.error("❌ Error saving GeoJSON file:", err);
+      return res.status(500).json({ error: "Failed to save GeoJSON file" });
+    }
+    res.json({ success: true });
+  });
+});
+
 // ✅ DELETE route to remove a placed window GeoJSON file
 router.delete("/placed/:buildingId/:filename", (req, res) => {
   const { buildingId, filename } = req.params;

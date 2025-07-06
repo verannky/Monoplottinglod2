@@ -23,6 +23,7 @@ const formatRupiah = (value) => {
   return "Rp " + value.toLocaleString("id-ID");
 };
 
+
 async function calculateFootprintAreaFromGeoJSON(buildingId) {
   try {
     const res = await fetch('/building_with_parts.geojson');
@@ -67,11 +68,47 @@ async function calculateFootprintAreaFromGeoJSON(buildingId) {
   }
 }
 
+const DBKB_HARGA = {
+  pintu: {
+    kayu: { harga: 1000000, satuan: "unit", luas: 1.8 },
+    besi: { harga: 50000, satuan: "m2", luas: 1.8 },
+  },
+  jendela: {
+    kaca: { harga: 175000, satuan: "m2", luas: 1.2 },
+    kayu: { harga: 100000, satuan: "m2", luas: 1.2 },
+  },
+};
+
+function hitungDBKBKomponen(jumlah, jenis, tipe) {
+  const data = DBKB_HARGA[tipe]?.[jenis?.toLowerCase()] || DBKB_HARGA[tipe]?.default;
+  if (!data) return 0;
+
+  const volume = data.satuan === "m2" ? jumlah * data.luas : jumlah;
+  return Math.round(volume * data.harga * 1.38);
+}
+
+function hitungDBKBJendela(jumlahTotal, jenisArray) {
+  if (!jumlahTotal || jumlahTotal === 0 || jenisArray.length === 0) return 0;
+
+  const perJenis = Math.floor(jumlahTotal / jenisArray.length);
+  const sisa = jumlahTotal % jenisArray.length;
+
+  return jenisArray.reduce((total, jenis, i) => {
+    const jml = perJenis + (i === 0 ? sisa : 0); // sisanya ditambah ke jenis pertama
+    return total + hitungDBKBKomponen(jml, jenis, "jendela");
+  }, 0);
+}
 
 const CesiumViewer = () => {
   const viewerRef = useRef(null);
   const navigate = useNavigate();
   const [buildingInfo, setBuildingInfo] = useState(null);
+  const [jenisJendela, setJenisJendela] = useState([]);
+  const [totalBiayaJendela, setTotalBiayaJendela] = useState(0);
+  const [totalBiayaPintu, setTotalBiayaPintu] = useState(0);
+  const [totalDBKBLod3, setTotalDBKBLod3] = useState(0);
+  const [estimasiPBBlod3, setEstimasiPBBlod3] = useState(0);
+
 
   useEffect(() => {
     if (!viewerRef.current) return;
@@ -152,7 +189,7 @@ const CesiumViewer = () => {
             }
 
             const windowCount = totalCount;
-            const qualityBonus = windowCount >= 10 ? 0.10 : windowCount >= 5 ? 0.05 : 0.0;
+            // const qualityBonus = windowCount >= 10 ? 0.10 : windowCount >= 5 ? 0.05 : 0.0;
 
             // --- 3. Ambil nilai properti dasar, gunakan fallback jika kosong
             const fallbackNJOPBangunanPerM2 = 1200000; // rata-rata Cimahi (contoh)
@@ -174,7 +211,7 @@ const CesiumViewer = () => {
 
             // --- 6. Hitung adjusted rate (untuk info)
             const baseRate = 2_000_000;
-            const adjustedRate = baseRate * (1 + qualityBonus);
+            const adjustedRate = baseRate;
 
             // --- 7. Hitung NJKP dan PBB
             const njoptkp = 15_000_000;
@@ -182,12 +219,22 @@ const CesiumViewer = () => {
             const njkp = njkpRate * Math.max(0, totalNJOP - njoptkp);
             const pbbDue = 0.005 * njkp;
 
+            const newTotalBiayaJendela = hitungDBKBJendela(windowCount, jenisJendela);
+            const newTotalBiayaPintu = hitungDBKBKomponen(1, "kayu", "pintu");
+            const newTotalDBKBLod3 = newTotalBiayaJendela + newTotalBiayaPintu;
+            const newEstimasiPBBlod3 = 0.005 * newTotalDBKBLod3;
+
+            setTotalBiayaJendela(newTotalBiayaJendela);
+            setTotalBiayaPintu(newTotalBiayaPintu);
+            setTotalDBKBLod3(newTotalDBKBLod3);
+            setEstimasiPBBlod3(newEstimasiPBBlod3);
+
             // --- 8. Simpan info untuk UI
             setBuildingInfo({
               uid,
               buildingId,
               windowCount,
-              qualityBonus: (qualityBonus * 100).toFixed(0),
+              // qualityBonus: (qualityBonus * 100).toFixed(0),
               adjustedRate,
               buildingNJOP,
               landNJOP,
@@ -217,6 +264,43 @@ const CesiumViewer = () => {
       if (viewer && !viewer.isDestroyed()) viewer.destroy();
     };
   }, [navigate]);
+
+  useEffect(() => {
+    const fetchJenisJendela = async () => {
+      const jenisSet = new Set();
+
+      try {
+        const filesRes = await fetch(`http://localhost:5000/api/placed_windows/${buildingInfo?.buildingId}`);
+        const files = await filesRes.json();
+
+        for (const filename of files) {
+          try {
+            const jenisRes = await fetch(
+              `http://localhost:5000/api/placed_windows/${buildingInfo.buildingId}/${encodeURIComponent(filename)}`
+            );
+            const jenisData = await jenisRes.json();
+
+            const jenisInFile = jenisData.features
+              ?.map((f) => f.properties?.jenisJendela)
+              .filter(Boolean);
+
+            jenisInFile.forEach((jenis) => jenisSet.add(jenis));
+          } catch (err) {
+            console.warn(`⚠️ Gagal memproses jenis jendela dari file ${filename}:`, err);
+          }
+        }
+
+        setJenisJendela([...jenisSet]);
+      } catch (err) {
+        console.error("❌ Gagal mengambil jenis jendela:", err);
+      }
+    };
+
+    if (buildingInfo?.buildingId) {
+      fetchJenisJendela();
+    }
+  }, [buildingInfo]);
+
 
   return (
     <div style={{ position: "relative" }}>
@@ -257,17 +341,29 @@ const CesiumViewer = () => {
           </div>
 
           <p><strong>ID Bangunan:</strong> {buildingInfo.buildingId || "N/A"}</p>
-          <p><strong>Jumlah Jendela:</strong> {buildingInfo.windowCount ?? "N/A"}</p>
-          <p><strong>Bonus Kualitas:</strong> +{buildingInfo.qualityBonus ?? "0"}%</p>
+          {/* <p><strong>Bonus Kualitas:</strong> +{buildingInfo.qualityBonus ?? "0"}%</p> */}
           <p><strong>Tarif Terkoreksi:</strong> {formatRupiah(buildingInfo.adjustedRate)} /m²</p>
           <p><strong>NJOP Bangunan:</strong> {formatRupiah(buildingInfo.buildingNJOP)}</p>
-          <p><strong>NJOP Tanah:</strong> {formatRupiah(buildingInfo.landNJOP)}</p>
+          {/* <p><strong>NJOP Tanah:</strong> {formatRupiah(buildingInfo.landNJOP)}</p> */}
           <p><strong>Total NJOP:</strong> {formatRupiah(buildingInfo.totalNJOP)}</p>
-          <p>
+          {/* <p>
             <strong>NJKP ({buildingInfo.njkpRate ?? "N/A"}%):</strong>{" "}
             {formatRupiah(buildingInfo.njkp)}
-          </p>
-          <p><strong>Estimasi PBB (0.5%):</strong> {formatRupiah(buildingInfo.pbbDue)}</p>
+          </p> */}
+          <p><strong>Estimasi PBB LoD 2 (0.5%):</strong> {formatRupiah(buildingInfo.pbbDue)}</p>
+          
+          <p><strong>Informasi Semantik Bangunan</strong></p>
+          <p><strong>Jumlah Jendela:</strong> {buildingInfo.windowCount ?? "N/A"}</p>
+          <p><strong>Jenis Jendela:</strong> {jenisJendela.length > 0 ? jenisJendela.join(', ') : "Tidak ditemukan"}</p> 
+          <p><strong>Jenis Atap:</strong> Genteng</p>
+          <p><strong>Jenis Dinding:</strong> Batu bata</p>
+          <p><strong>Jenis pintu:</strong> Kayu</p>
+
+          <p><strong>Estimasi Biaya Jendela (DBKB):</strong> {formatRupiah(totalBiayaJendela)}</p>
+          <p><strong>Estimasi Biaya Pintu (DBKB):</strong> {formatRupiah(totalBiayaPintu)}</p>
+          <p><strong>Total DBKB LoD 3 (Pintu + Jendela):</strong> {formatRupiah(totalDBKBLod3)}</p>
+          <p><strong>Estimasi PBB LoD 3 (0.5%):</strong> {formatRupiah(estimasiPBBlod3)}</p>
+
 
 
           <button

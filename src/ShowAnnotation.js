@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Stage, Layer, Rect, Image as KonvaImage } from "react-konva";
+import { Stage, Layer, Rect, Line, Image as KonvaImage } from "react-konva";
 import useImage from "use-image";
 import exifr from "exifr";
 
@@ -49,20 +49,15 @@ const ShowAnnotation = ({ imageUrl, geojsonUrl, imageName, buildingId, onClose }
         };
       };
 
-      const pixelRects = geo.features
+      const pixelPolygons = geo.features
         .filter(f => f.geometry.type === "Polygon")
         .map(f => {
           const coords = f.geometry.coordinates[0].map(c => latLonToPixel(c));
-          const xVals = coords.map(c => c.x);
-          const yVals = coords.map(c => c.y);
-          const x = Math.min(...xVals);
-          const y = Math.min(...yVals);
-          const width = Math.max(...xVals) - x;
-          const height = Math.max(...yVals) - y;
-          return { x, y, width, height };
+          return coords;
         });
 
-      setRects(pixelRects);
+      setRects(pixelPolygons);
+
     };
 
     if (img) loadAndProject();
@@ -129,13 +124,11 @@ const ShowAnnotation = ({ imageUrl, geojsonUrl, imageName, buildingId, onClose }
           >
             <Layer>
               <KonvaImage image={img} />
-              {rects.map((r, idx) => (
-                <Rect
+              {rects.map((polygon, idx) => (
+                <Line
                   key={idx}
-                  x={r.x}
-                  y={r.y}
-                  width={r.width}
-                  height={r.height}
+                  points={polygon.flatMap(p => [p.x, p.y])}
+                  closed
                   stroke="lime"
                   strokeWidth={2 / scale}
                   fill="rgba(0,255,0,0.2)"

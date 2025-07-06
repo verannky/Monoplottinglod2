@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Stage, Layer, Rect, Image as KonvaImage } from "react-konva";
+import { Stage, Layer, Rect, Line, Image as KonvaImage } from "react-konva";
 import useImage from "use-image";
 import exifr from "exifr";
 
@@ -10,6 +10,9 @@ const ImageAnnotator = ({ imageUrl, buildingId, imageName, onClose }) => {
   const [imageMetadata, setImageMetadata] = useState(null);
   const stageRef = useRef();
   const [scale, setScale] = useState(1);
+  const [polygons, setPolygons] = useState([]); // finalized polygons
+  const [currentPoints, setCurrentPoints] = useState([]); // points being digitized
+
 
   useEffect(() => {
     fetch(imageUrl)
@@ -71,6 +74,20 @@ const ImageAnnotator = ({ imageUrl, buildingId, imageName, onClose }) => {
     setNewRect({ x: unscaled.x, y: unscaled.y, width: 0, height: 0 });
   };
 
+  const handleClick = () => {
+    const pos = stageRef.current.getPointerPosition();
+    const unscaled = { x: pos.x / scale, y: pos.y / scale };
+    setCurrentPoints([...currentPoints, unscaled]);
+  };
+
+  const handleDoubleClick = () => {
+    if (currentPoints.length >= 3) {
+      setPolygons([...polygons, currentPoints]);
+      setCurrentPoints([]);
+    }
+  };
+
+
   const handleMouseMove = () => {
     if (!newRect) return;
     const pos = stageRef.current.getPointerPosition();
@@ -119,19 +136,15 @@ const ImageAnnotator = ({ imageUrl, buildingId, imageName, onClose }) => {
       return [lon, lat, alt];
     };
 
-    const features = rects.map((r) => {
-      const x1 = r.x;
-      const y1 = r.y;
-      const x2 = r.x + r.width;
-      const y2 = r.y + r.height;
-      const corners = [
-        { x: x1, y: y1 },
-        { x: x2, y: y1 },
-        { x: x2, y: y2 },
-        { x: x1, y: y2 },
-      ];
-      const coords = corners.map(pixelToLatLonAlt);
-      coords.push(coords[0]);
+    const features = polygons.map((pts) => {
+      const coords = pts.map(pixelToLatLonAlt);
+      coords.push(coords[0]); // close polygon
+
+      // Estimate width/height in meters from bounding box
+      const xs = pts.map(p => p.x);
+      const ys = pts.map(p => p.y);
+      const widthPx = Math.max(...xs) - Math.min(...xs);
+      const heightPx = Math.max(...ys) - Math.min(...ys);
 
       return {
         type: "Feature",
@@ -145,8 +158,8 @@ const ImageAnnotator = ({ imageUrl, buildingId, imageName, onClose }) => {
           source: "photo-annotation",
           altitude: alt,
           meterPerPixel,
-          widthInMeters: Math.abs(r.width) * meterPerPixel,
-          heightInMeters: Math.abs(r.height) * meterPerPixel,
+          widthInMeters: widthPx * meterPerPixel,
+          heightInMeters: heightPx * meterPerPixel,
         },
       };
     });
@@ -213,38 +226,27 @@ const ImageAnnotator = ({ imageUrl, buildingId, imageName, onClose }) => {
             height={img.height * scale}
             scale={{ x: scale, y: scale }}
             ref={stageRef}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            style={{
-              boxShadow: "0 0 6px rgba(0,0,0,0.3)",
-              backgroundColor: "#000",
-              cursor: "crosshair",
-            }}
+            onClick={handleClick}
+            onDblClick={handleDoubleClick}
           >
             <Layer>
               <KonvaImage image={img} />
-              {rects.map((r, idx) => (
-                <Rect
+              {polygons.map((points, idx) => (
+                <Line
                   key={idx}
-                  x={r.x}
-                  y={r.y}
-                  width={r.width}
-                  height={r.height}
+                  points={points.flatMap(p => [p.x, p.y])}
+                  closed
                   stroke="red"
                   strokeWidth={2 / scale}
                   fill="rgba(255,0,0,0.2)"
                 />
               ))}
-              {newRect && (
-                <Rect
-                  x={newRect.x}
-                  y={newRect.y}
-                  width={newRect.width}
-                  height={newRect.height}
+              {currentPoints.length > 0 && (
+                <Line
+                  points={currentPoints.flatMap(p => [p.x, p.y])}
                   stroke="yellow"
-                  dash={[10, 5]}
                   strokeWidth={2 / scale}
+                  dash={[10, 5]}
                 />
               )}
             </Layer>
